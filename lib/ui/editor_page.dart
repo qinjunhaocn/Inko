@@ -244,6 +244,7 @@ class _EditorPageState extends State<EditorPage> {
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = '导出失败：$error');
+      _toast('导出失败：$error');
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
@@ -402,15 +403,7 @@ class _PreviewArea extends StatelessWidget {
                   if (kind == MediaKind.photo && photo != null)
                     RawImage(image: photo, fit: BoxFit.fill)
                   else if (kind == MediaKind.video && video != null)
-                    FittedBox(
-                      fit: BoxFit.fill,
-                      clipBehavior: Clip.hardEdge,
-                      child: SizedBox(
-                        width: video!.value.size.width,
-                        height: video!.value.size.height,
-                        child: VideoPlayer(video!),
-                      ),
-                    ),
+                    VideoPlayer(video!),
                   if (watermark != null && rect != null)
                     CustomPaint(
                       painter: _WatermarkPainter(
@@ -850,13 +843,20 @@ class _RatioRow extends StatelessWidget {
   final ResolvedWatermark? resolved;
   final ValueChanged<WatermarkSettings> onChanged;
 
+  /// 下拉里的“自动”哨兵值，不能与任何真实比例重名。
+  static const String _autoValue = '__auto__';
+
   @override
   Widget build(BuildContext context) {
     final ratios = model.availableRatios(photo: isPhoto);
-    final auto = frameSize.height == 0
-        ? '16:9'
-        : model.nearestRatio(frameSize.width / frameSize.height, photo: isPhoto);
-    final current = settings.ratioOverride ?? auto;
+    final auto = model.nearestRatio(
+      frameSize.height > 0 ? frameSize.width / frameSize.height : 16 / 9,
+      photo: isPhoto,
+    );
+    final override = settings.ratioOverride;
+    final value = (override != null && ratios.contains(override))
+        ? override
+        : _autoValue;
 
     return Row(
       children: <Widget>[
@@ -864,11 +864,11 @@ class _RatioRow extends StatelessWidget {
         const Spacer(),
         DropdownButtonHideUnderline(
           child: DropdownButton<String>(
-            value: ratios.contains(current) ? current : ratios.first,
+            value: value,
             borderRadius: BorderRadius.circular(14),
             items: <DropdownMenuItem<String>>[
               DropdownMenuItem<String>(
-                value: ratios.contains(current) ? current : ratios.first,
+                value: _autoValue,
                 child: Text('自动 · $auto'),
               ),
               ...ratios.map(
@@ -878,13 +878,13 @@ class _RatioRow extends StatelessWidget {
                 ),
               ),
             ],
-            onChanged: (String? value) {
-              if (value == null) return;
-              if (value == auto) {
-                onChanged(settings.copyWith(ratioOverride: null));
-              } else {
-                onChanged(settings.copyWith(ratioOverride: value));
-              }
+            onChanged: (String? picked) {
+              if (picked == null) return;
+              onChanged(
+                settings.copyWith(
+                  ratioOverride: picked == _autoValue ? null : picked,
+                ),
+              );
             },
           ),
         ),
