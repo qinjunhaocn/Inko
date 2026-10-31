@@ -163,9 +163,8 @@ class MainActivity : FlutterActivity() {
         val album = call.argument<String>("album") ?: "Inko"
 
         executor.execute {
-            var target: MediaSaver.OutputTarget? = null
             try {
-                target = MediaSaver(this).createVideoFile(fileName, album)
+                val target = MediaSaver(this).createVideoFile(fileName, album)
                 val request = VideoWatermarker.Request(
                     inputPath = input,
                     watermarkPath = watermark,

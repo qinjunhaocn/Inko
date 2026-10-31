@@ -6,17 +6,18 @@ import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
+import android.opengl.EGLExt
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.view.Surface
-import android.view.SurfaceTexture
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -112,11 +113,11 @@ class VideoWatermarker {
         }
 
         val egl = EglCore()
-        var decoder: MediaCodec? = null
-        var encoder: MediaCodec? = null
-        var decoderSurface: Surface? = null
-        var encoderInputSurface: Surface? = null
-        var surfaceTexture: SurfaceTexture? = null
+        var decoderRef: MediaCodec? = null
+        var encoderRef: MediaCodec? = null
+        var decoderSurfaceRef: Surface? = null
+        var encoderInputSurfaceRef: Surface? = null
+        var surfaceTextureRef: SurfaceTexture? = null
         var success = false
 
         try {
@@ -124,15 +125,16 @@ class VideoWatermarker {
             val frameSignal = FrameSignal()
             val externalTexture = egl.createExternalTexture()
             val st = SurfaceTexture(externalTexture)
-            surfaceTexture = st
+            surfaceTextureRef = st
             st.setDefaultBufferSize(codedWidth, codedHeight)
             st.setOnFrameAvailableListener { frameSignal.signal() }
 
-            decoderSurface = Surface(st)
-            decoder = MediaCodec.createDecoderByType(sourceMime).also {
-                it.configure(sourceFormat, decoderSurface, null, 0)
-                it.start()
-            }
+            val decoderSurface = Surface(st)
+            decoderSurfaceRef = decoderSurface
+            val decoder = MediaCodec.createDecoderByType(sourceMime)
+            decoderRef = decoder
+            decoder.configure(sourceFormat, decoderSurface, null, 0)
+            decoder.start()
 
             val targetFormat =
                 MediaFormat.createVideoFormat("video/avc", outWidth, outHeight).apply {
@@ -144,10 +146,11 @@ class VideoWatermarker {
                     setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 }
-            encoder = MediaCodec.createEncoderByType("video/avc").also {
-                it.configure(targetFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            }
-            encoderInputSurface = encoder.createInputSurface()
+            val encoder = MediaCodec.createEncoderByType("video/avc")
+            encoderRef = encoder
+            encoder.configure(targetFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val encoderInputSurface = encoder.createInputSurface()
+            encoderInputSurfaceRef = encoderInputSurface
             encoder.start()
 
             egl.createWindowSurface(encoderInputSurface)
@@ -274,13 +277,13 @@ class VideoWatermarker {
             request.onProgress(1.0)
             success = true
         } finally {
-            runCatching { decoder?.stop() }
-            runCatching { decoder?.release() }
-            runCatching { decoderSurface?.release() }
-            runCatching { surfaceTexture?.release() }
-            runCatching { encoder?.stop() }
-            runCatching { encoder?.release() }
-            runCatching { encoderInputSurface?.release() }
+            runCatching { decoderRef?.stop() }
+            runCatching { decoderRef?.release() }
+            runCatching { decoderSurfaceRef?.release() }
+            runCatching { surfaceTextureRef?.release() }
+            runCatching { encoderRef?.stop() }
+            runCatching { encoderRef?.release() }
+            runCatching { encoderInputSurfaceRef?.release() }
             runCatching { if (muxerStarted) muxer?.stop() }
             runCatching { muxer?.release() }
             runCatching { egl.release() }
@@ -612,7 +615,7 @@ class VideoWatermarker {
 
         fun present(presentationTimeNs: Long) {
             if (windowSurface == EGL14.EGL_NO_SURFACE) return
-            EGL14.eglPresentationTimeANDROID(display, windowSurface, presentationTimeNs)
+            EGLExt.eglPresentationTimeANDROID(display, windowSurface, presentationTimeNs)
             EGL14.eglSwapBuffers(display, windowSurface)
         }
 
