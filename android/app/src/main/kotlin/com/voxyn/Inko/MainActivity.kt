@@ -159,6 +159,8 @@ class MainActivity : FlutterActivity() {
         cancelFlag.set(false)
 
         val opacity = (call.argument<Double>("opacity") ?: 1.0).toFloat()
+        val codec = (call.argument<String>("codec") ?: "auto")
+            .let { if (it == "h264" || it == "hevc") it else "auto" }
         val fileName = call.argument<String>("fileName") ?: "Inko.mp4"
         val album = call.argument<String>("album") ?: "Inko"
 
@@ -170,6 +172,7 @@ class MainActivity : FlutterActivity() {
                     watermarkPath = watermark,
                     rect = FloatArray(4) { index -> rect[index].toFloat() },
                     opacity = opacity,
+                    codec = codec,
                     fragmentShader = shader,
                     vertexShader = vertexShader,
                     output = target,
@@ -178,8 +181,14 @@ class MainActivity : FlutterActivity() {
                     },
                     isCancelled = { cancelFlag.get() },
                 )
-                VideoWatermarker().process(request)
-                mainHandler.post { result.success(target.display) }
+                val watermarker = VideoWatermarker()
+                watermarker.process(request)
+                val usedCodec = watermarker.resolvedEncoderMime ?: "video/avc"
+                mainHandler.post {
+                    result.success(
+                        mapOf("path" to target.display, "codec" to usedCodec),
+                    )
+                }
             } catch (error: Throwable) {
                 mainHandler.post {
                     result.error("export_failed", error.message ?: error.toString(), null)

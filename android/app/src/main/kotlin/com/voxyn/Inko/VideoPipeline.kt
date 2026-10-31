@@ -3,6 +3,7 @@ package com.voxyn.Inko
 import android.graphics.BitmapFactory
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
@@ -41,6 +42,8 @@ class VideoWatermarker {
         /** 归一化 `[left, top, width, height]`，左上原点 */
         val rect: FloatArray,
         val opacity: Float,
+        /** `auto` / `h264` / `hevc` */
+        val codec: String,
         val fragmentShader: String,
         val vertexShader: String,
         val output: MediaSaver.OutputTarget,
@@ -53,6 +56,10 @@ class VideoWatermarker {
         const val MAX_DRAIN_ITERATIONS = 200_000
         const val AUDIO_BUFFER_SIZE = 512 * 1024
     }
+
+    /** 实际使用的编码器 mime，供上层回显 */
+    var resolvedEncoderMime: String? = null
+        private set
 
     private var muxer: MediaMuxer? = null
     private var muxerStarted = false
@@ -136,8 +143,10 @@ class VideoWatermarker {
             decoder.configure(sourceFormat, decoderSurface, null, 0)
             decoder.start()
 
+            val encoderMime = resolveEncoderMime(request.codec, sourceMime)
+            resolvedEncoderMime = encoderMime
             val targetFormat =
-                MediaFormat.createVideoFormat("video/avc", outWidth, outHeight).apply {
+                MediaFormat.createVideoFormat(encoderMime, outWidth, outHeight).apply {
                     setInteger(
                         MediaFormat.KEY_COLOR_FORMAT,
                         MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
@@ -146,7 +155,7 @@ class VideoWatermarker {
                     setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 }
-            val encoder = MediaCodec.createEncoderByType("video/avc")
+            val encoder = MediaCodec.createEncoderByType(encoderMime)
             encoderRef = encoder
             encoder.configure(targetFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             val encoderInputSurface = encoder.createInputSurface()
@@ -347,6 +356,43 @@ class VideoWatermarker {
                 }
             }
             else -> return Drain.IDLE
+        }
+    }
+
+    /**
+     * 决定输出编码器。
+     *
+     * * 显式指定 hevc / h264 时严格按指定来，设备没有就报错，不偷偷替换；
+     * * auto 时跟随源编码，HEVC 源优先 HEVC，但没有 HEVC 编码器就回退 H.264。
+     */
+    private fun resolveEncoderMime(requested: String, sourceMime: String): String {
+        val hevc = MediaFormat.MIMETYPE_VIDEO_HEVC
+        val avc = MediaFormat.MIMETYPE_VIDEO_AVC
+        val want = when (requested) {
+            "hevc" -> hevc
+            "h264" -> avc
+            else -> if (sourceMime.equals(hevc, ignoreCase = true)) hevc else avc
+        }
+        if (hasSurfaceEncoder(want)) return want
+        if (requested == "auto" && want == hevc && hasSurfaceEncoder(avc)) return avc
+        throw IllegalStateException(
+            if (want == hevc) "这台设备没有可用的 HEVC 编码器" else "这台设备没有可用的 H.264 编码器",
+        )
+    }
+
+    private fun hasSurfaceEncoder(mime: String): Boolean {
+        return try {
+            val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+            list.codecInfos.any { info ->
+                info.isEncoder && info.supportedTypes.any { type ->
+                    type.equals(mime, ignoreCase = true) &&
+                        info.getCapabilitiesForType(type)
+                            .colorFormats
+                            .any { it == MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface }
+                }
+            }
+        } catch (_: Throwable) {
+            false
         }
     }
 

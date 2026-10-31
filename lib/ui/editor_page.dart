@@ -235,10 +235,15 @@ class _EditorPageState extends State<EditorPage> {
           opacity: _settings.opacity,
           shader: waterKernelFragmentShader,
           vertexShader: waterKernelVertexShader,
+          codec: _settings.codec.wire,
           fileName: _fileName('mp4'),
           albumName: 'Inko',
         );
-        _toast('视频已导出${saved == null ? '' : '：$saved'}');
+        _toast(
+          saved == null
+              ? '视频已导出'
+              : '视频已导出（${saved.codecLabel}）：${saved.location}',
+        );
         await video.play();
       }
     } catch (error) {
@@ -644,6 +649,34 @@ class _ControlPanel extends StatelessWidget {
             display: '${(settings.opacity * 100).toStringAsFixed(0)}%',
             onChanged: (double v) => onChanged(settings.copyWith(opacity: v)),
           ),
+          if (!isPhoto) ...<Widget>[
+            const SizedBox(height: 14),
+            const _SectionLabel('编码'),
+            const SizedBox(height: 8),
+            SegmentedButton<ExportCodec>(
+              showSelectedIcon: false,
+              segments: ExportCodec.values
+                  .map(
+                    (ExportCodec codec) => ButtonSegment<ExportCodec>(
+                      value: codec,
+                      label: Text(codec.label),
+                    ),
+                  )
+                  .toList(),
+              selected: <ExportCodec>{settings.codec},
+              onSelectionChanged: (Set<ExportCodec> value) =>
+                  onChanged(settings.copyWith(codec: value.first)),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              settings.codec == ExportCodec.auto
+                  ? '自动：跟随源编码（HEVC 源出 HEVC），设备不支持时回退 H.264'
+                  : '强制使用 ${settings.codec.label}，设备没有对应编码器时会直接报错',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
           Row(
             children: <Widget>[
               Expanded(

@@ -14,6 +14,7 @@ class WatermarkSettings {
     this.ratioOverride,
     this.scale = 1.0,
     this.opacity = 1.0,
+    this.codec = ExportCodec.auto,
   });
 
   final String modelId;
@@ -26,6 +27,9 @@ class WatermarkSettings {
   final double scale;
   final double opacity;
 
+  /// 视频导出的编码器。
+  final ExportCodec codec;
+
   bool get isDefaultLook =>
       (scale - 1.0).abs() < 1e-6 && (opacity - 1.0).abs() < 1e-6;
 
@@ -37,6 +41,7 @@ class WatermarkSettings {
     Object? ratioOverride = _unset,
     double? scale,
     double? opacity,
+    ExportCodec? codec,
   }) {
     return WatermarkSettings(
       modelId: modelId ?? this.modelId,
@@ -48,6 +53,7 @@ class WatermarkSettings {
           : ratioOverride as String?,
       scale: scale ?? this.scale,
       opacity: opacity ?? this.opacity,
+      codec: codec ?? this.codec,
     );
   }
 
@@ -72,3 +78,21 @@ const Map<String, String> positionLabels = <String, String>{
 
 /// 输入媒体的类型。
 enum MediaKind { photo, video }
+
+/// 视频导出编码器。
+///
+/// * [auto] —— 跟随源视频的编码（HEVC 源出 HEVC，H.264 源出 H.264），
+///   设备没有对应编码器时回退 H.264；
+/// * [h264] / [hevc] —— 强制指定，设备不支持则直接报错。
+enum ExportCodec {
+  auto('自动', 'auto'),
+  h264('H.264', 'h264'),
+  hevc('HEVC', 'hevc');
+
+  const ExportCodec(this.label, this.wire);
+
+  final String label;
+
+  /// 传给原生侧的字符串。
+  final String wire;
+}
