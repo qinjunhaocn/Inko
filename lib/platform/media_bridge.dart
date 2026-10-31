@@ -69,6 +69,8 @@ class MediaBridge {
     return VideoExportResult(
       location: raw['path'] as String? ?? '',
       codec: raw['codec'] as String? ?? '',
+      hasAudio: raw['audio'] as bool? ?? true,
+      warning: raw['warning'] as String?,
     );
   }
 
@@ -102,12 +104,23 @@ class MediaBridge {
 
 /// 视频导出结果：落盘位置 + 实际使用的编码器。
 class VideoExportResult {
-  const VideoExportResult({required this.location, required this.codec});
+  const VideoExportResult({
+    required this.location,
+    required this.codec,
+    this.hasAudio = true,
+    this.warning,
+  });
 
   final String location;
 
   /// 实际使用的 mime，例如 `video/hevc`。
   final String codec;
+
+  /// 成片是否带音轨。
+  final bool hasAudio;
+
+  /// 音轨复制失败时的原因。
+  final String? warning;
 
   /// 面向用户的编码器名字。
   String get codecLabel {

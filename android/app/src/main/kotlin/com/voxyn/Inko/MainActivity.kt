@@ -185,9 +185,15 @@ class MainActivity : FlutterActivity() {
                 )
                 watermarker.process(request)
                 val usedCodec = watermarker.resolvedEncoderMime ?: "video/avc"
+                val audioError = watermarker.audioError
                 mainHandler.post {
                     result.success(
-                        mapOf("path" to target.display, "codec" to usedCodec),
+                        mapOf(
+                            "path" to target.display,
+                            "codec" to usedCodec,
+                            "audio" to (audioError == null),
+                            "warning" to audioError,
+                        ),
                     )
                 }
             } catch (error: Throwable) {

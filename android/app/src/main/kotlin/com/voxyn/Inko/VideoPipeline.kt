@@ -55,12 +55,18 @@ class VideoWatermarker {
         const val TAG = "InkoVideo"
         const val TIMEOUT_US = 10_000L
         const val MAX_DRAIN_ITERATIONS = 200_000
-        const val AUDIO_BUFFER_SIZE = 512 * 1024
+        const val AUDIO_BUFFER_SIZE = 1024 * 1024
+        const val MAX_AUDIO_BUFFER_SIZE = 32 * 1024 * 1024
     }
 
     /** 当前所处阶段，出错时用于定位 */
     @Volatile
     var stage: String = "准备"
+        private set
+
+    /** 音轨复制失败的原因；非空表示成片没有声音 */
+    @Volatile
+    var audioError: String? = null
         private set
 
     /** 实际使用的编码器 mime，供上层回显 */
@@ -307,7 +313,14 @@ class VideoWatermarker {
             stage = "写入视频帧"
             finishEncoding(encoder, info)
             stage = "写入音轨"
-            copyAudio(extractor, audioTrack, info)
+            try {
+                copyAudio(request.inputPath, audioFormat, info)
+            } catch (error: Throwable) {
+                // 音轨挂了不该毁掉整支片子：成片照出，但要把原因显式带回给用户
+                android.util.Log.e(TAG, "音轨复制失败，成片将没有声音", error)
+                audioError = error.javaClass.simpleName +
+                    (error.message?.let { ": $it" } ?: "（无消息）")
+            }
             request.onProgress(1.0)
             success = true
         } finally {
@@ -468,24 +481,64 @@ class VideoWatermarker {
         }
     }
 
-    /** 原音轨直通（不解码、不重编码）。 */
+    /**
+     * 原音轨直通（不解码、不重编码）。
+     *
+     * 这里刻意用一个**独立的 MediaExtractor**：视频解码循环已经把原来那个 extractor
+     * 读到了 EOS，复用它在部分设备上会让 readSampleData 抛出没有消息的
+     * IllegalArgumentException。独立实例 + 按 mime 重新定位音轨，最稳。
+     */
     private fun copyAudio(
-        extractor: MediaExtractor,
-        audioTrack: Int,
+        inputPath: String,
+        audioFormat: MediaFormat?,
         info: MediaCodec.BufferInfo,
     ) {
-        if (audioTrack < 0 || !muxerStarted || audioTrackIndex < 0) return
-        extractor.selectTrack(audioTrack)
-        extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+        if (audioFormat == null || audioTrackIndex < 0 || !muxerStarted) return
 
-        val buffer = ByteBuffer.allocateDirect(AUDIO_BUFFER_SIZE)
-        while (true) {
-            buffer.clear()
-            val size = extractor.readSampleData(buffer, 0)
-            if (size < 0) break
-            info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
-            muxer!!.writeSampleData(audioTrackIndex, buffer, info)
-            extractor.advance()
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(inputPath)
+
+            var track = -1
+            for (i in 0 until extractor.trackCount) {
+                val mime = extractor.getTrackFormat(i)
+                    .getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("audio/")) {
+                    track = i
+                    break
+                }
+            }
+            if (track < 0) return
+            extractor.selectTrack(track)
+
+            var capacity = AUDIO_BUFFER_SIZE
+            if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                capacity = maxOf(
+                    capacity,
+                    audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE),
+                )
+            }
+            var buffer = ByteBuffer.allocateDirect(capacity)
+
+            while (true) {
+                buffer.clear()
+                val size = try {
+                    extractor.readSampleData(buffer, 0)
+                } catch (_: IllegalArgumentException) {
+                    // 少数设备在缓冲区装不下这一帧时会抛无消息的 IAE：扩容后重读一次
+                    if (capacity > MAX_AUDIO_BUFFER_SIZE) throw
+                    capacity *= 2
+                    buffer = ByteBuffer.allocateDirect(capacity)
+                    android.util.Log.w(TAG, "音轨读取失败，缓冲区扩到 $capacity 字节重试")
+                    continue
+                }
+                if (size < 0) break
+                info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
+                muxer!!.writeSampleData(audioTrackIndex, buffer, info)
+                extractor.advance()
+            }
+        } finally {
+            runCatching { extractor.release() }
         }
     }
 

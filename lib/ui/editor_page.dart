@@ -240,11 +240,22 @@ class _EditorPageState extends State<EditorPage> {
           fileName: _fileName('mp4'),
           albumName: 'Inko',
         );
-        _toast(
-          saved == null
-              ? '视频已导出'
-              : '视频已导出（${saved.codecLabel}）：${saved.location}',
-        );
+        if (saved != null && !saved.hasAudio) {
+          await _showFailure(
+            title: '已导出，但没有声音',
+            summary: '视频编码成功，原音轨复制失败',
+            detail:
+                '编码器：${saved.codecLabel}\n'
+                '位置：${saved.location}\n'
+                '音轨错误：${saved.warning ?? '未知'}',
+          );
+        } else {
+          _toast(
+            saved == null
+                ? '视频已导出'
+                : '视频已导出（${saved.codecLabel}）：${saved.location}',
+          );
+        }
         await video.play();
       }
     } on PlatformException catch (error) {
