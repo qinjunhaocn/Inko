@@ -524,9 +524,9 @@ class VideoWatermarker {
                 buffer.clear()
                 val size = try {
                     extractor.readSampleData(buffer, 0)
-                } catch (_: IllegalArgumentException) {
+                } catch (error: IllegalArgumentException) {
                     // 少数设备在缓冲区装不下这一帧时会抛无消息的 IAE：扩容后重读一次
-                    if (capacity > MAX_AUDIO_BUFFER_SIZE) throw
+                    if (capacity > MAX_AUDIO_BUFFER_SIZE) throw error
                     capacity *= 2
                     buffer = ByteBuffer.allocateDirect(capacity)
                     android.util.Log.w(TAG, "音轨读取失败，缓冲区扩到 $capacity 字节重试")
