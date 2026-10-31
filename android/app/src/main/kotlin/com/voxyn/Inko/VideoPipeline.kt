@@ -52,6 +52,7 @@ class VideoWatermarker {
     )
 
     private companion object {
+        const val TAG = "InkoVideo"
         const val TIMEOUT_US = 10_000L
         const val MAX_DRAIN_ITERATIONS = 200_000
         const val AUDIO_BUFFER_SIZE = 512 * 1024
