@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
 import '../data/catalog.dart';
@@ -246,13 +247,93 @@ class _EditorPageState extends State<EditorPage> {
         );
         await video.play();
       }
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      final detail = StringBuffer()
+        ..writeln(error.code)
+        ..writeln(error.message ?? '')
+        ..writeln(error.details ?? '（无堆栈）');
+      setState(() => _error = '导出失败：${error.message ?? error.code}');
+      await _showFailure(
+        title: '导出失败',
+        summary: error.message ?? error.code,
+        detail: detail.toString(),
+      );
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = '导出失败：$error');
-      _toast('导出失败：$error');
+      await _showFailure(title: '导出失败', summary: '$error', detail: '$error');
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
+  }
+
+  /// 把失败原因完整摊开，方便把日志贴回来。
+  Future<void> _showFailure({
+    required String title,
+    required String summary,
+    required String detail,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        final scheme = Theme.of(context).colorScheme;
+        return AlertDialog(
+          title: Text(title),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text(
+                    summary,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.error,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: SelectableText(
+                      detail,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: detail));
+                if (!context.mounted) return;
+                Navigator.of(context).pop();
+                _toast('已复制错误信息');
+              },
+              child: const Text('复制'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _toast(String message) {

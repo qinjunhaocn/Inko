@@ -57,6 +57,11 @@ class VideoWatermarker {
         const val AUDIO_BUFFER_SIZE = 512 * 1024
     }
 
+    /** 当前所处阶段，出错时用于定位 */
+    @Volatile
+    var stage: String = "准备"
+        private set
+
     /** 实际使用的编码器 mime，供上层回显 */
     var resolvedEncoderMime: String? = null
         private set
@@ -128,6 +133,7 @@ class VideoWatermarker {
         var success = false
 
         try {
+            stage = "初始化 EGL"
             egl.initialize()
             val frameSignal = FrameSignal()
             val externalTexture = egl.createExternalTexture()
@@ -136,6 +142,7 @@ class VideoWatermarker {
             st.setDefaultBufferSize(codedWidth, codedHeight)
             st.setOnFrameAvailableListener { frameSignal.signal() }
 
+            stage = "创建解码器"
             val decoderSurface = Surface(st)
             decoderSurfaceRef = decoderSurface
             val decoder = MediaCodec.createDecoderByType(sourceMime)
@@ -143,8 +150,21 @@ class VideoWatermarker {
             decoder.configure(sourceFormat, decoderSurface, null, 0)
             decoder.start()
 
+            stage = "选择编码器"
             val encoderMime = resolveEncoderMime(request.codec, sourceMime)
             resolvedEncoderMime = encoderMime
+            val codecLabel = if (encoderMime == MediaFormat.MIMETYPE_VIDEO_HEVC) "HEVC" else "H.264"
+
+            // 先问编码器能不能吃这个尺寸，避免 configure 抛出没有消息的
+            // IllegalArgumentException，用户完全看不出发生了什么
+            stage = "检查编码器能力"
+            val effectiveFrameRate = checkEncoderSupport(encoderMime, outWidth, outHeight, frameRate)
+            android.util.Log.i(
+                TAG,
+                "导出 $codecLabel ${outWidth}x$outHeight @${effectiveFrameRate}fps，源 $sourceMime",
+            )
+
+            stage = "配置编码器"
             val targetFormat =
                 MediaFormat.createVideoFormat(encoderMime, outWidth, outHeight).apply {
                     setInteger(
@@ -152,12 +172,13 @@ class VideoWatermarker {
                         MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
                     )
                     setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-                    setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, effectiveFrameRate)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 }
             val encoder = MediaCodec.createEncoderByType(encoderMime)
             encoderRef = encoder
             encoder.configure(targetFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            stage = "启动编码器"
             val encoderInputSurface = encoder.createInputSurface()
             encoderInputSurfaceRef = encoderInputSurface
             encoder.start()
@@ -165,24 +186,24 @@ class VideoWatermarker {
             egl.createWindowSurface(encoderInputSurface)
             egl.makeCurrent()
 
+            stage = "编译着色器"
             val program = GlProgram(request.vertexShader, request.fragmentShader)
             val watermarkTexture = createTextureFromFile(request.watermarkPath)
 
             val target = request.output
-            muxer = if (target.fileDescriptor != null) {
-                MediaMuxer(
-                    target.fileDescriptor.fileDescriptor,
-                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
-                )
-            } else {
-                MediaMuxer(
-                    target.plainFile?.absolutePath
-                        ?: throw IllegalStateException("没有输出目标"),
-                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
-                )
-            }
+            stage = "创建封装器"
+            muxer = MediaMuxer(
+                target.muxerPath,
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
+            )
             if (audioFormat != null) {
-                audioTrackIndex = muxer!!.addTrack(audioFormat)
+                // 个别音频编码 MediaMuxer 不支持，宁可丢音轨也不要整个导出失败
+                runCatching { muxer!!.addTrack(audioFormat) }.onSuccess {
+                    audioTrackIndex = it
+                }.onFailure {
+                    android.util.Log.w(TAG, "音轨无法写入 MP4，已跳过", it)
+                    audioTrackIndex = -1
+                }
             }
 
             val rectPx = floatArrayOf(
@@ -192,6 +213,7 @@ class VideoWatermarker {
                 request.rect[3] * outHeight,
             )
 
+            stage = "解码与合成"
             extractor.selectTrack(videoTrack)
             val info = MediaCodec.BufferInfo()
             val transform = FloatArray(16)
@@ -281,11 +303,14 @@ class VideoWatermarker {
                 }
             }
 
+            stage = "写入视频帧"
             finishEncoding(encoder, info)
+            stage = "写入音轨"
             copyAudio(extractor, audioTrack, info)
             request.onProgress(1.0)
             success = true
         } finally {
+            stage = if (success) "收尾" else stage
             runCatching { decoderRef?.stop() }
             runCatching { decoderRef?.release() }
             runCatching { decoderSurfaceRef?.release() }
@@ -298,7 +323,7 @@ class VideoWatermarker {
             runCatching { egl.release() }
             runCatching { extractor.release() }
             if (success) {
-                request.output.publish()
+                request.output.commit()
             } else {
                 request.output.abort()
             }
@@ -344,8 +369,6 @@ class VideoWatermarker {
                     info.size = 0
                 }
                 if (buffer != null && info.size > 0 && muxerStarted) {
-                    buffer.position(info.offset)
-                    buffer.limit(info.offset + info.size)
                     muxer!!.writeSampleData(videoTrackIndex, buffer, info)
                 }
                 encoder.releaseOutputBuffer(index, false)
@@ -357,6 +380,54 @@ class VideoWatermarker {
             }
             else -> return Drain.IDLE
         }
+    }
+
+    /**
+     * 校验编码器是否支持当前尺寸，并返回可用的帧率。
+     *
+     * H.264 的 Level 上限比 HEVC 低，5.7K 这类素材用 H.264 编码器 configure 会直接抛
+     * 没有消息的 IllegalArgumentException；这里提前拦下并给出人能看懂的原因。
+     */
+    private fun checkEncoderSupport(
+        mime: String,
+        width: Int,
+        height: Int,
+        frameRate: Int,
+    ): Int {
+        val label = if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) "HEVC" else "H.264"
+        val caps = runCatching {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .firstOrNull { info ->
+                    info.isEncoder && info.supportedTypes.any {
+                        it.equals(mime, ignoreCase = true) &&
+                            info.getCapabilitiesForType(it).colorFormats.any { format ->
+                                format == MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+                            }
+                    }
+                }?.getCapabilitiesForType(mime)?.videoCapabilities
+        }.getOrNull() ?: return frameRate
+
+        val sizeOk = runCatching { caps.isSizeSupported(width, height) }.getOrDefault(true)
+        if (!sizeOk) {
+            throw IllegalStateException(
+                "$label 编码器不支持 ${width}×$height，请改用 HEVC 或换用更小的素材",
+            )
+        }
+
+        val rateOk = runCatching {
+            caps.areSizeAndRateSupported(width, height, frameRate.toDouble())
+        }.getOrDefault(true)
+        if (rateOk) return frameRate
+
+        val maxRate = runCatching {
+            caps.getSupportedFrameRatesFor(width, height).upper
+        }.getOrNull() ?: return frameRate
+        val clamped = maxRate.toInt().coerceIn(1, frameRate)
+        android.util.Log.w(
+            TAG,
+            "$label 不支持 ${width}x$height@${frameRate}fps，帧率降为 $clamped",
+        )
+        return clamped
     }
 
     /**

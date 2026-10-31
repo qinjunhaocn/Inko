@@ -2,6 +2,7 @@ package com.voxyn.Inko
 
 import android.media.MediaMetadataRetriever
 import android.os.Handler
+import android.util.Log
 import android.os.Looper
 import io.flutter.FlutterInjector
 import io.flutter.embedding.android.FlutterActivity
@@ -165,8 +166,9 @@ class MainActivity : FlutterActivity() {
         val album = call.argument<String>("album") ?: "Inko"
 
         executor.execute {
+            val watermarker = VideoWatermarker()
             try {
-                val target = MediaSaver(this).createVideoFile(fileName, album)
+                val target = MediaSaver(this).createVideoTarget(fileName, album)
                 val request = VideoWatermarker.Request(
                     inputPath = input,
                     watermarkPath = watermark,
@@ -181,7 +183,6 @@ class MainActivity : FlutterActivity() {
                     },
                     isCancelled = { cancelFlag.get() },
                 )
-                val watermarker = VideoWatermarker()
                 watermarker.process(request)
                 val usedCodec = watermarker.resolvedEncoderMime ?: "video/avc"
                 mainHandler.post {
@@ -190,9 +191,12 @@ class MainActivity : FlutterActivity() {
                     )
                 }
             } catch (error: Throwable) {
-                mainHandler.post {
-                    result.error("export_failed", error.message ?: error.toString(), null)
-                }
+                Log.e("Inko", "视频导出失败（阶段：${watermarker.stage}）", error)
+                val stage = watermarker.stage
+                val message =
+                    "[$stage] ${error.javaClass.simpleName}: ${error.message ?: "无消息"}"
+                val detail = Log.getStackTraceString(error)
+                mainHandler.post { result.error("export_failed", message, detail) }
             } finally {
                 busy.set(false)
             }
